@@ -2,31 +2,67 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>A股MACD分析工具</title>
-    <!-- Bootstrap CSS -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A股MACD指标分析与策略回测工具</title>
+    <!-- 1. 先引入 jQuery（修复 $ 未定义的核心） -->
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+    <!-- 2. 再引入其他依赖 -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Highcharts -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-select@1.14.0-beta3/dist/css/bootstrap-select.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/highcharts@11.1.0/highcharts.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/highcharts@11.1.0/modules/stock.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/highcharts@11.1.0/modules/exporting.js"></script>
-    <!-- Vue -->
+    <script src="https://cdn.jsdelivr.net/npm/highcharts@11.1.0/modules/tooltip.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/vue@2.7.14/dist/vue.js"></script>
-    <!-- Axios -->
     <script src="https://cdn.jsdelivr.net/npm/axios@1.5.0/dist/axios.min.js"></script>
+    <style>
+        /* 自定义样式优化 */
+        .card {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+        }
+        .loading {
+            color: #0d6efd;
+            font-weight: 500;
+        }
+        .error {
+            color: #dc3545;
+            font-weight: 500;
+        }
+        .backtest-result {
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 10px;
+        }
+        .chart-container {
+            height: 500px;
+            margin-top: 20px;
+        }
+    </style>
 </head>
 <body>
-    <div id="app" class="container mt-4">
-        <h2 class="text-center mb-4">A股MACD分析工具</h2>
+    <div id="app" class="container mt-4 mb-5">
+        <h2 class="text-center mb-5">A股MACD指标分析与策略回测工具</h2>
 
         <!-- 表单区域 -->
         <div class="card mb-4">
             <div class="card-body">
                 <form @submit.prevent="analyzeMACD">
-                    <div class="row mb-3">
-                        <!-- 股票代码 -->
-                        <div class="col-md-2">
-                            <label class="form-label">股票代码</label>
-                            <input v-model="form.stockCode" type="text" class="form-control" placeholder="如600519" required>
+                    <div class="row mb-3 align-items-end">
+                        <!-- 股票代码下拉选择框 -->
+                        <div class="col-md-3">
+                            <label class="form-label">股票代码/名称</label>
+                            <select v-model="form.stockCode" 
+                                    class="selectpicker form-control" 
+                                    data-live-search="true"
+                                    data-live-search-placeholder="搜索代码/名称"
+                                    title="请选择或输入股票"
+                                    required>
+                                <option v-for="item in stockList" :value="item.value" :key="item.value">
+                                    {{ item.label }}
+                                </option>
+                            </select>
                         </div>
                         <!-- 开始日期 -->
                         <div class="col-md-2">
@@ -38,93 +74,125 @@
                             <label class="form-label">结束日期</label>
                             <input v-model="form.endDate" type="date" class="form-control" required>
                         </div>
-                        <!-- MACD参数 -->
-                        <div class="col-md-2">
+                        <!-- MACD1 (DIF周期) -->
+                        <div class="col-md-1">
                             <label class="form-label">MACD1 (DIF)</label>
                             <input v-model="form.macd1" type="number" class="form-control" min="1" value="12">
                         </div>
-                        <div class="col-md-2">
+                        <!-- MACD2 (DEA周期) -->
+                        <div class="col-md-1">
                             <label class="form-label">MACD2 (DEA)</label>
                             <input v-model="form.macd2" type="number" class="form-control" min="1" value="26">
                         </div>
-                        <div class="col-md-2">
-                            <label class="form-label">MACDSIG (信号线)</label>
+                        <!-- MACDSIG (信号线周期) -->
+                        <div class="col-md-1">
+                            <label class="form-label">信号线</label>
                             <input v-model="form.macdsig" type="number" class="form-control" min="1" value="9">
                         </div>
+                        <!-- 操作按钮 -->
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-primary w-100" :disabled="loading">
+                                <span v-if="loading" class="spinner-border spinner-border-sm me-2"></span>
+                                开始分析
+                            </button>
+                            <button type="button" class="btn btn-secondary w-100 mt-2" @click="resetForm">重置</button>
+                        </div>
                     </div>
-                    <button type="submit" class="btn btn-primary">开始分析</button>
-                    <button type="button" class="btn btn-secondary ms-2" @click="resetForm">重置</button>
                 </form>
+                
+                <!-- 加载/错误提示 -->
+                <div v-if="loading" class="loading text-center">正在分析数据，请稍候...</div>
+                <div v-if="errorMsg" class="error text-center">{{ errorMsg }}</div>
             </div>
         </div>
 
-        <!-- 加载提示 -->
-        <div v-if="loading" class="text-center mb-4">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-2">正在分析，请稍候...</p>
-        </div>
-
-        <!-- 错误提示 -->
-        <div v-if="errorMsg" class="alert alert-danger mb-4" role="alert">
-            {{ errorMsg }}
-        </div>
-
-        <!-- 回测结果 -->
+        <!-- 回测结果展示 -->
         <div v-if="backtestResult" class="card mb-4">
             <div class="card-header">
-                <h5>回测结果</h5>
+                <h5 class="mb-0">策略回测结果</h5>
             </div>
             <div class="card-body">
-                <div class="row">
-                    <div class="col-md-2">初始资金：{{ backtestResult.initialCapital }} 元</div>
-                    <div class="col-md-2">最终资金：{{ backtestResult.finalCapital }} 元</div>
-                    <div class="col-md-2">总收益：{{ backtestResult.totalProfit }} 元</div>
-                    <div class="col-md-2">收益率：{{ backtestResult.profitRate }} %</div>
-                    <div class="col-md-2">胜率：{{ backtestResult.winRate }} %</div>
+                <div class="row backtest-result">
+                    <div class="col-md-2">初始资金：¥{{ backtestResult.initialCapital.toLocaleString() }}</div>
+                    <div class="col-md-2">最终资金：¥{{ backtestResult.finalCapital.toLocaleString() }}</div>
+                    <div class="col-md-2">总收益：¥{{ backtestResult.totalProfit.toLocaleString() }}</div>
+                    <div class="col-md-2">收益率：{{ backtestResult.profitRate }}%</div>
+                    <div class="col-md-2">胜率：{{ backtestResult.winRate.toFixed(2) }}%</div>
                     <div class="col-md-2">总交易次数：{{ backtestResult.totalTrades }}</div>
                 </div>
             </div>
         </div>
 
-        <!-- 图表区域 -->
-        <div v-if="chartData" class="row">
-            <!-- K线图 -->
-            <div class="col-md-12 mb-4">
-                <div id="klineChart" style="height: 400px;"></div>
+        <!-- 图表展示区域 -->
+        <div v-if="chartData" class="card">
+            <div class="card-header">
+                <h5 class="mb-0">K线图 & MACD指标图</h5>
             </div>
-            <!-- MACD图 -->
-            <div class="col-md-12">
-                <div id="macdChart" style="height: 300px;"></div>
+            <div class="card-body">
+                <div id="chart-container" class="chart-container"></div>
             </div>
         </div>
     </div>
+
+    <!-- 引入Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap-select@1.14.0-beta3/dist/js/bootstrap-select.min.js"></script>
 
     <script>
         new Vue({
             el: '#app',
             data: {
+                // 表单数据
                 form: {
                     stockCode: '',
                     startDate: '2024-01-01',
-                    endDate: '2025-03-01',
+                    endDate: new Date().toISOString().split('T')[0], // 默认当前日期
                     macd1: 12,
                     macd2: 26,
                     macdsig: 9
                 },
-                loading: false,
-                errorMsg: '',
-                chartData: null,
-                backtestResult: null
+                loading: false,       // 加载状态
+                errorMsg: '',         // 错误提示
+                chartData: null,      // 图表数据
+                backtestResult: null, // 回测结果
+                stockList: []         // 股票列表
+            },
+            // 页面加载完成后获取股票列表
+            mounted() {
+                this.getStockList();
             },
             methods: {
-                // 重置表单
+                /**
+                 * 获取股票列表（从后端接口）
+                 */
+                async getStockList() {
+                    try {
+                        const response = await axios.get('http://localhost:5000/api/get_stock_list');
+                        const res = response.data;
+                        if (res.code === 0) {
+                            this.stockList = res.data;
+                            // 优化：确保 jQuery 和 bootstrap-select 已加载完成
+                            this.$nextTick(() => {
+                                if (typeof $ !== 'undefined' && $('.selectpicker').length) {
+                                    $('.selectpicker').selectpicker('refresh');
+                                }
+                            });
+                        } else {
+                            this.errorMsg = res.msg;
+                        }
+                    } catch (e) {
+                        this.errorMsg = '获取股票列表失败：' + (e.message || '网络异常');
+                    }
+                },
+
+                /**
+                 * 重置表单
+                 */
                 resetForm() {
                     this.form = {
                         stockCode: '',
                         startDate: '2024-01-01',
-                        endDate: '2025-03-01',
+                        endDate: new Date().toISOString().split('T')[0],
                         macd1: 12,
                         macd2: 26,
                         macdsig: 9
@@ -132,126 +200,180 @@
                     this.errorMsg = '';
                     this.chartData = null;
                     this.backtestResult = null;
+                    // 优化：增加 $ 存在性判断
+                    this.$nextTick(() => {
+                        if (typeof $ !== 'undefined' && $('.selectpicker').length) {
+                            $('.selectpicker').selectpicker('val', '');
+                        }
+                    });
+                    if (this.chart) {
+                        this.chart.destroy();
+                    }
                 },
-                // 分析MACD
+
+                /**
+                 * 执行MACD分析和回测
+                 */
                 async analyzeMACD() {
-                    this.loading = true;
+                    // 清空之前的错误提示
                     this.errorMsg = '';
-                    this.chartData = null;
-                    this.backtestResult = null;
+                    // 验证日期逻辑
+                    if (new Date(this.form.startDate) >= new Date(this.form.endDate)) {
+                        this.errorMsg = '开始日期不能晚于或等于结束日期';
+                        return;
+                    }
+                    // 验证MACD参数逻辑
+                    if (Number(this.form.macd1) >= Number(this.form.macd2)) {
+                        this.errorMsg = 'MACD1(DIF)必须小于MACD2(DEA)';
+                        return;
+                    }
 
+                    this.loading = true;
                     try {
-                        // 日期格式转换（适配akshare：YYYYMMDD）
-                        const formatDate = (dateStr) => dateStr.replace(/-/g, '');
-                        const params = {
+                        // 调用后端分析接口
+                        const response = await axios.post('http://localhost:5000/api/analyze_macd', {
                             stockCode: this.form.stockCode,
-                            startDate: formatDate(this.form.startDate),
-                            endDate: formatDate(this.form.endDate),
-                            macd1: this.form.macd1,
-                            macd2: this.form.macd2,
-                            macdsig: this.form.macdsig
-                        };
+                            startDate: this.form.startDate.replace(/-/g, ''), // 转为YYYYMMDD格式
+                            endDate: this.form.endDate.replace(/-/g, ''),
+                            macd1: Number(this.form.macd1),
+                            macd2: Number(this.form.macd2),
+                            macdsig: Number(this.form.macdsig)
+                        });
 
-                        // 调用后端接口
-                        const response = await axios.post('http://localhost:5000/api/analyze_macd', params);
                         const res = response.data;
-
                         if (res.code === 0) {
                             this.chartData = res.data;
                             this.backtestResult = res.data.backtest;
-                            // 绘制图表
-                            this.drawCharts();
+                            this.drawCharts(); // 绘制图表
                         } else {
                             this.errorMsg = res.msg;
                         }
                     } catch (e) {
-                        this.errorMsg = '请求失败：' + e.message;
+                        this.errorMsg = '分析失败：' + (e.message || '接口请求异常');
                     } finally {
                         this.loading = false;
                     }
                 },
-                // 绘制K线和MACD图表
-                drawCharts() {
-                    // 1. 绘制K线图
-                    Highcharts.stockChart('klineChart', {
-                        lang: {
-                            rangeSelectorFrom: '从',
-                            rangeSelectorTo: '到',
-                            rangeSelectorZoom: '缩放',
-                            downloadPNG: '下载PNG',
-                            downloadJPEG: '下载JPEG',
-                            downloadPDF: '下载PDF',
-                            downloadSVG: '下载SVG',
-                            printChart: '打印图表'
-                        },
-                        title: {
-                            text: `${this.form.stockCode} 日线K线图`
-                        },
-                        rangeSelector: {
-                            selected: 1
-                        },
-                        series: [{
-                            type: 'candlestick',
-                            name: 'K线',
-                            data: this.chartData.klineData.map(item => [
-                                item[0], item[1], item[2], item[3], item[4]
-                            ]),
-                            tooltip: {
-                                valueDecimals: 2
-                            }
-                        }]
-                    });
 
-                    // 2. 绘制MACD图
-                    Highcharts.chart('macdChart', {
-                        lang: {
-                            downloadPNG: '下载PNG',
-                            downloadJPEG: '下载JPEG',
-                            downloadPDF: '下载PDF',
-                            downloadSVG: '下载SVG',
-                            printChart: '打印图表'
+                /**
+                 * 绘制K线和MACD图表
+                 */
+                drawCharts() {
+                    // 销毁原有图表
+                    if (this.chart) {
+                        this.chart.destroy();
+                    }
+
+                    // 构建图表配置
+                    this.chart = Highcharts.stockChart('chart-container', {
+                        // 图表通用配置
+                        chart: {
+                            zoomType: 'x',
+                            backgroundColor: 'transparent'
                         },
+                        // 标题
                         title: {
-                            text: `${this.form.stockCode} MACD指标 (${this.form.macd1},${this.form.macd2},${this.form.macdsig})`
+                            text: `${this.form.stockCode} K线图与MACD指标`
                         },
-                        xAxis: {
-                            type: 'datetime'
+                        // 导航栏
+                        navigator: {
+                            enabled: true
                         },
-                        yAxis: {
-                            title: {
-                                text: 'MACD值'
-                            }
+                        // 滚动条
+                        scrollbar: {
+                            enabled: true
                         },
+                        // 范围选择器
+                        rangeSelector: {
+                            buttons: [{
+                                type: 'all',
+                                text: '全部'
+                            }],
+                            selected: 0,
+                            inputEnabled: false
+                        },
+                        // 提示框
                         tooltip: {
-                            formatter: function() {
-                                const date = new Date(this.x);
-                                const dateStr = date.toLocaleDateString();
-                                return `<b>${dateStr}</b><br/>
-                                        DIF: ${this.points[0].y}<br/>
-                                        DEA: ${this.points[1].y}<br/>
-                                        BAR: ${this.points[2].y}`;
-                            }
+                            split: true,
+                            crosshairs: true
                         },
+                        // 数据序列
                         series: [
+                            // K线图序列
                             {
-                                name: 'DIF',
-                                type: 'line',
-                                data: this.chartData.macdData.map(item => [item[0], item[1]]),
-                                color: '#FF0000'
-                            },
-                            {
-                                name: 'DEA',
-                                type: 'line',
-                                data: this.chartData.macdData.map(item => [item[0], item[2]]),
-                                color: '#0000FF'
-                            },
-                            {
-                                name: 'BAR',
-                                type: 'column',
-                                data: this.chartData.macdData.map(item => [item[0], item[3]]),
-                                color: function() {
-                                    return this.y > 0 ? '#FF4500' : '#008000';
+                                type: 'candlestick',
+                                name: 'K线',
+                                data: this.chartData.klineData.map(item => [
+                                    item[0], // 时间戳
+                                    item[1], // 开盘价
+                                    item[2], // 最高价
+                                    item[3], // 最低价
+                                    item[4]  // 收盘价
+                                ]),
+                                tooltip: {
+                                    pointFormat: `
+                                        <span style="color:{series.color}">\u25CF</span> {series.name}:<br/>
+                                        开盘: {point.open}<br/>
+                                        最高: {point.high}<br/>
+                                        最低: {point.low}<br/>
+                                        收盘: {point.close}<br/>
+                                    `
                                 }
+                            },
+                            // DIF序列
+                            {
+                                type: 'line',
+                                name: 'DIF',
+                                data: this.chartData.macdData.map(item => [item[0], item[1]]),
+                                yAxis: 1,
+                                color: '#0066CC'
+                            },
+                            // DEA序列
+                            {
+                                type: 'line',
+                                name: 'DEA',
+                                data: this.chartData.macdData.map(item => [item[0], item[2]]),
+                                yAxis: 1,
+                                color: '#FF6600'
+                            },
+                            // BAR序列（柱状图）
+                            {
+                                type: 'column',
+                                name: 'MACD Bar',
+                                data: this.chartData.macdData.map(item => [item[0], item[3]]),
+                                yAxis: 1,
+                                color: function (point) {
+                                    return point.y >= 0 ? '#FF4444' : '#00C851';
+                                }
+                            }
+                        ],
+                        // 多Y轴配置
+                        yAxis: [
+                            {
+                                // 主Y轴（K线）
+                                labels: {
+                                    align: 'right',
+                                    x: -3
+                                },
+                                title: {
+                                    text: '价格'
+                                },
+                                height: '70%',
+                                lineWidth: 2
+                            },
+                            {
+                                // 副Y轴（MACD）
+                                labels: {
+                                    align: 'right',
+                                    x: -3
+                                },
+                                title: {
+                                    text: 'MACD'
+                                },
+                                top: '70%',
+                                height: '30%',
+                                offset: 0,
+                                lineWidth: 2
                             }
                         ]
                     });
@@ -259,8 +381,5 @@
             }
         });
     </script>
-
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
