@@ -50,11 +50,23 @@
             <div class="card-body">
                 <form @submit.prevent="analyzeMACD">
                     <div class="row mb-3 align-items-end">
+                        <!-- 策略类型选择 -->
+                        <div class="col-md-2">
+                            <label class="form-label">策略类型</label>
+                            <select v-model="form.strategyType"
+                                    class="form-control"
+                                    required>
+                                <option value="macd">MACD策略</option>
+                                <option value="ma">均线策略</option>
+                                <option value="rsi">RSI策略</option>
+                                <option value="grid">网格策略</option>
+                            </select>
+                        </div>
                         <!-- 股票代码下拉选择框 -->
-                        <div class="col-md-3">
+                        <div class="col-md-2">
                             <label class="form-label">股票代码/名称</label>
-                            <select v-model="form.stockCode" 
-                                    class="selectpicker form-control" 
+                            <select v-model="form.stockCode"
+                                    class="selectpicker form-control"
                                     data-live-search="true"
                                     data-live-search-placeholder="搜索代码/名称"
                                     title="请选择或输入股票"
@@ -144,12 +156,20 @@
             data: {
                 // 表单数据
                 form: {
+                    strategyType: 'macd',
                     stockCode: '',
                     startDate: '2024-01-01',
                     endDate: new Date().toISOString().split('T')[0], // 默认当前日期
                     macd1: 12,
                     macd2: 26,
-                    macdsig: 9
+                    macdsig: 9,
+                    maShort: 5,
+                    maLong: 20,
+                    rsiPeriod: 14,
+                    rsiOverbought: 70,
+                    rsiOversold: 30,
+                    gridInterval: 2,
+                    gridLevels: 10
                 },
                 loading: false,       // 加载状态
                 errorMsg: '',         // 错误提示
@@ -222,23 +242,48 @@
                         this.errorMsg = '开始日期不能晚于或等于结束日期';
                         return;
                     }
-                    // 验证MACD参数逻辑
-                    if (Number(this.form.macd1) >= Number(this.form.macd2)) {
+
+                    // 验证策略参数逻辑
+                    if (this.form.strategyType === 'macd' && Number(this.form.macd1) >= Number(this.form.macd2)) {
                         this.errorMsg = 'MACD1(DIF)必须小于MACD2(DEA)';
+                        return;
+                    } else if (this.form.strategyType === 'ma' && Number(this.form.maShort) >= Number(this.form.maLong)) {
+                        this.errorMsg = '短期均线必须小于长期均线';
+                        return;
+                    } else if (this.form.strategyType === 'rsi' && Number(this.form.rsiOversold) >= Number(this.form.rsiOverbought)) {
+                        this.errorMsg = 'RSI超卖值必须小于超买值';
                         return;
                     }
 
                     this.loading = true;
                     try {
-                        // 调用后端分析接口
-                        const response = await axios.post('http://localhost:5000/api/analyze_macd', {
+                        // 构建请求参数
+                        const requestParams = {
+                            strategyType: this.form.strategyType,
                             stockCode: this.form.stockCode,
                             startDate: this.form.startDate.replace(/-/g, ''), // 转为YYYYMMDD格式
-                            endDate: this.form.endDate.replace(/-/g, ''),
-                            macd1: Number(this.form.macd1),
-                            macd2: Number(this.form.macd2),
-                            macdsig: Number(this.form.macdsig)
-                        });
+                            endDate: this.form.endDate.replace(/-/g, '')
+                        };
+
+                        // 根据策略类型添加额外参数
+                        if (this.form.strategyType === 'macd') {
+                            requestParams.macd1 = Number(this.form.macd1);
+                            requestParams.macd2 = Number(this.form.macd2);
+                            requestParams.macdsig = Number(this.form.macdsig);
+                        } else if (this.form.strategyType === 'ma') {
+                            requestParams.maShort = Number(this.form.maShort);
+                            requestParams.maLong = Number(this.form.maLong);
+                        } else if (this.form.strategyType === 'rsi') {
+                            requestParams.rsiPeriod = Number(this.form.rsiPeriod);
+                            requestParams.rsiOversold = Number(this.form.rsiOversold);
+                            requestParams.rsiOverbought = Number(this.form.rsiOverbought);
+                        } else if (this.form.strategyType === 'grid') {
+                            requestParams.gridInterval = Number(this.form.gridInterval);
+                            requestParams.gridLevels = Number(this.form.gridLevels);
+                        }
+
+                        // 调用后端分析接口
+                        const response = await axios.post('http://localhost:5000/api/analyze_macd', requestParams);
 
                         const res = response.data;
                         if (res.code === 0) {
@@ -258,6 +303,43 @@
                 /**
                  * 绘制K线和MACD图表
                  */
+                /**
+                 * 获取策略名称
+                 */
+                getStrategyName() {
+                    const strategyNames = {
+                        'macd': 'MACD',
+                        'ma': '均线',
+                        'rsi': 'RSI',
+                        'grid': '网格'
+                    };
+                    return strategyNames[this.form.strategyType] || 'MACD';
+                },
+
+                /**
+                 * 获取买入信号（用于图表标记）
+                 */
+                getBuySignals() {
+                    if (!this.chartData || !this.chartData.signals) return [];
+                    return this.chartData.signals.filter(signal => signal.type === 'buy').map(signal => ({
+                        x: signal.timestamp,
+                        title: 'B',
+                        text: '买入'
+                    }));
+                },
+
+                /**
+                 * 获取卖出信号（用于图表标记）
+                 */
+                getSellSignals() {
+                    if (!this.chartData || !this.chartData.signals) return [];
+                    return this.chartData.signals.filter(signal => signal.type === 'sell').map(signal => ({
+                        x: signal.timestamp,
+                        title: 'S',
+                        text: '卖出'
+                    }));
+                },
+
                 drawCharts() {
                     // 销毁原有图表
                     if (this.chart) {
@@ -273,7 +355,7 @@
                         },
                         // 标题
                         title: {
-                            text: `${this.form.stockCode} K线图与MACD指标`
+                            text: `${this.form.stockCode} K线图与${this.getStrategyName()}指标`
                         },
                         // 导航栏
                         navigator: {
@@ -295,7 +377,23 @@
                         // 提示框
                         tooltip: {
                             split: true,
-                            crosshairs: true
+                            crosshairs: true,
+                            xDateFormat: '%Y/%m/%d'
+                        },
+                        // x轴配置
+                        xAxis: {
+                            type: 'datetime',
+                            dateTimeLabelFormats: {
+                                day: '%Y/%m/%d',
+                                week: '%Y/%m/%d',
+                                month: '%Y/%m/%d',
+                                year: '%Y/%m/%d'
+                            },
+                            labels: {
+                                formatter: function() {
+                                    return Highcharts.dateFormat('%Y/%m/%d', this.value);
+                                }
+                            }
                         },
                         // 数据序列
                         series: [
@@ -319,6 +417,24 @@
                                         收盘: {point.close}<br/>
                                     `
                                 }
+                            },
+                            // 买入信号标记
+                            {
+                                type: 'flags',
+                                name: '买入信号',
+                                data: this.getBuySignals(),
+                                onSeries: 'K线',
+                                shape: 'circlepin',
+                                color: '#00BFFF'
+                            },
+                            // 卖出信号标记
+                            {
+                                type: 'flags',
+                                name: '卖出信号',
+                                data: this.getSellSignals(),
+                                onSeries: 'K线',
+                                shape: 'circlepin',
+                                color: '#FF4444'
                             },
                             // DIF序列
                             {

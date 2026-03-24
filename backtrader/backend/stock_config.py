@@ -62,6 +62,8 @@ def get_stock_list_from_akshare():
         )
 
         print(f"原始上市股票数量：{len(stock_info_df)}")
+        with open('stock_list_cache_tmp.json', 'w', encoding='utf-8') as f:
+            json.dump(stock_info_df, f, ensure_ascii=False, indent=2)
 
         # 2. 核心过滤逻辑
         # 2.1 过滤掉创业板、科创板（只保留主板/中小板）

@@ -32,11 +32,11 @@ ak.headers = {
 
 warnings.filterwarnings('ignore')
 
-# 初始化app（保持不变）
+# 初始化app（修复静态文件路径）
 app = Flask(
     __name__,
-    static_folder=os.path.abspath('../frontend'),
-    template_folder=os.path.abspath('../frontend')
+    static_folder=os.path.abspath(os.path.join(os.path.dirname(__file__), '../frontend')),
+    template_folder=os.path.abspath(os.path.join(os.path.dirname(__file__), '../frontend'))
 )
 CORS(app)
 
@@ -58,47 +58,60 @@ def get_stock_list():
         })
 
 @app.route('/')
+@app.route('/index.html')
 def index():
-    return send_from_directory(app.static_folder, 'index.html')
+    frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../frontend'))
+    index_path = os.path.join(frontend_dir, 'index.html')
+    print('Attempting to serve index.html from:', index_path)
+    if os.path.exists(index_path):
+        try:
+            with open(index_path, 'rb') as f:
+                content = f.read()
+            return content, 200, {'Content-Type': 'text/html; charset=utf-8'}
+        except Exception as e:
+            return str(e), 500
+    else:
+        return 'File not found at: ' + index_path, 404
 
 # 全局配置
 INITIAL_CAPITAL = 100000.0
 COMMISSION_RATE = 0.00025
 ORDER_PERCENT = 0.9
 
-# MACD策略类
-class MACDStrategy(bt.Strategy):
+# 基础策略类（包含ATR止损）
+class BaseStrategy(bt.Strategy):
     params = (
-        ('macd1', 12),
-        ('macd2', 26),
-        ('macdsig', 9),
         ('order_percent', ORDER_PERCENT),
+        ('atr_period', 14),
+        ('stop_loss_multiplier', 2),  # ATR止损倍数
     )
 
     def __init__(self):
-        self.macd = bt.indicators.MACD(
-            self.data.close,
-            period_me1=self.params.macd1,
-            period_me2=self.params.macd2,
-            period_signal=self.params.macdsig
-        )
-        self.crossover = bt.indicators.CrossOver(self.macd.macd, self.macd.signal)
+        self.atr = bt.indicators.ATR(self.data, period=self.params.atr_period)
         self.trades = []
         self.win_trades = 0
         self.lose_trades = 0
+        self.signals = []
+        self.buy_price = 0
 
-    def next(self):
-        cash = self.broker.get_cash()
-        if self.crossover > 0 and not self.position:
-            size = int((cash * self.params.order_percent) / self.data.close[0])
-            if size > 0:
-                self.buy(size=size)
-        elif self.crossover < 0 and self.position:
-            trade_profit = (self.data.close[0] - self.position.price) * self.position.size
-            self.trades.append(trade_profit)
-            self.win_trades += 1 if trade_profit > 0 else 0
-            self.lose_trades += 1 if trade_profit <= 0 else 0
-            self.sell(size=self.position.size)
+    def log_signal(self, timestamp, signal_type):
+        self.signals.append({
+            'timestamp': timestamp,
+            'type': signal_type,
+            'price': self.data.close[0]
+        })
+
+    def check_stop_loss(self):
+        if self.position and self.buy_price > 0:
+            stop_loss_price = self.buy_price - (self.atr[0] * self.params.stop_loss_multiplier)
+            if self.data.close[0] <= stop_loss_price:
+                trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
+                self.trades.append(trade_profit)
+                self.win_trades += 1 if trade_profit > 0 else 0
+                self.lose_trades += 1 if trade_profit <= 0 else 0
+                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+                self.sell(size=self.position.size)
+                self.buy_price = 0
 
     def stop(self):
         self.total_profit = self.broker.get_value() - INITIAL_CAPITAL
@@ -107,24 +120,193 @@ class MACDStrategy(bt.Strategy):
         self.win_rate = (self.win_trades / total_trades) * 100 if total_trades > 0 else 0
         self.total_trades = total_trades
 
+
+# MACD策略类（继承基础策略，包含ATR止损）
+class MACDStrategy(BaseStrategy):
+    params = (
+        ('macd1', 12),
+        ('macd2', 26),
+        ('macdsig', 9),
+        ('order_percent', ORDER_PERCENT),
+        ('atr_period', 14),
+        ('stop_loss_multiplier', 2),
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.macd = bt.indicators.MACD(
+            self.data.close,
+            period_me1=self.params.macd1,
+            period_me2=self.params.macd2,
+            period_signal=self.params.macdsig
+        )
+        self.crossover = bt.indicators.CrossOver(self.macd.macd, self.macd.signal)
+        # 量比指标（简化计算）
+        self.volume_ratio = bt.indicators.SMA(self.data.volume, period=5) / bt.indicators.SMA(self.data.volume, period=20)
+
+    def next(self):
+        self.check_stop_loss()
+
+        cash = self.broker.get_cash()
+        # MACD金叉 + 量比 > 1.5 作为买入信号
+        if self.crossover > 0 and not self.position and self.volume_ratio[0] > 1.5:
+            size = int((cash * self.params.order_percent) / self.data.close[0])
+            if size > 0:
+                self.buy(size=size)
+                self.buy_price = self.data.close[0]
+                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+        elif self.crossover < 0 and self.position:
+            trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
+            self.trades.append(trade_profit)
+            self.win_trades += 1 if trade_profit > 0 else 0
+            self.lose_trades += 1 if trade_profit <= 0 else 0
+            self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+            self.sell(size=self.position.size)
+            self.buy_price = 0
+
+
+# 均线策略类（继承基础策略，包含ATR止损）
+class MAStrategy(BaseStrategy):
+    params = (
+        ('ma_short', 5),
+        ('ma_long', 20),
+        ('order_percent', ORDER_PERCENT),
+        ('atr_period', 14),
+        ('stop_loss_multiplier', 2),
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.ma_short = bt.indicators.SMA(self.data.close, period=self.params.ma_short)
+        self.ma_long = bt.indicators.SMA(self.data.close, period=self.params.ma_long)
+        self.crossover = bt.indicators.CrossOver(self.ma_short, self.ma_long)
+
+    def next(self):
+        self.check_stop_loss()
+
+        cash = self.broker.get_cash()
+        if self.crossover > 0 and not self.position:
+            size = int((cash * self.params.order_percent) / self.data.close[0])
+            if size > 0:
+                self.buy(size=size)
+                self.buy_price = self.data.close[0]
+                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+        elif self.crossover < 0 and self.position:
+            trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
+            self.trades.append(trade_profit)
+            self.win_trades += 1 if trade_profit > 0 else 0
+            self.lose_trades += 1 if trade_profit <= 0 else 0
+            self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+            self.sell(size=self.position.size)
+            self.buy_price = 0
+
+
+# RSI策略类（继承基础策略，包含ATR止损）
+class RSIStrategy(BaseStrategy):
+    params = (
+        ('rsi_period', 14),
+        ('rsi_oversold', 30),
+        ('rsi_overbought', 70),
+        ('order_percent', ORDER_PERCENT),
+        ('atr_period', 14),
+        ('stop_loss_multiplier', 2),
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
+
+    def next(self):
+        self.check_stop_loss()
+
+        cash = self.broker.get_cash()
+        if self.rsi[0] <= self.params.rsi_oversold and not self.position:
+            size = int((cash * self.params.order_percent) / self.data.close[0])
+            if size > 0:
+                self.buy(size=size)
+                self.buy_price = self.data.close[0]
+                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+        elif self.rsi[0] >= self.params.rsi_overbought and self.position:
+            trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
+            self.trades.append(trade_profit)
+            self.win_trades += 1 if trade_profit > 0 else 0
+            self.lose_trades += 1 if trade_profit <= 0 else 0
+            self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+            self.sell(size=self.position.size)
+            self.buy_price = 0
+
+
+# 网格策略类（继承基础策略，包含ATR止损）
+class GridStrategy(BaseStrategy):
+    params = (
+        ('grid_interval', 2),  # 网格间距（百分比）
+        ('grid_levels', 10),  # 网格层数
+        ('order_percent', ORDER_PERCENT / 10),  # 每层仓位
+        ('atr_period', 14),
+        ('stop_loss_multiplier', 2),
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.base_price = self.data.close[0]
+        self.grid_prices = self.calculate_grid_prices()
+
+    def calculate_grid_prices(self):
+        grid_prices = []
+        interval = self.base_price * (self.params.grid_interval / 100)
+        for i in range(-self.params.grid_levels, self.params.grid_levels + 1):
+            grid_prices.append(self.base_price + (i * interval))
+        return sorted(grid_prices)
+
+    def next(self):
+        self.check_stop_loss()
+
+        current_price = self.data.close[0]
+        for i, grid_price in enumerate(self.grid_prices):
+            if not self.position and current_price <= grid_price and i > 0:
+                # 买入信号（价格跌破网格线）
+                cash = self.broker.get_cash()
+                size = int((cash * self.params.order_percent) / current_price)
+                if size > 0:
+                    self.buy(size=size)
+                    self.buy_price = current_price
+                    self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+            elif self.position and current_price >= grid_price and i < len(self.grid_prices) - 1:
+                # 卖出信号（价格突破网格线）
+                trade_profit = (current_price - self.buy_price) * self.position.size
+                self.trades.append(trade_profit)
+                self.win_trades += 1 if trade_profit > 0 else 0
+                self.lose_trades += 1 if trade_profit <= 0 else 0
+                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+                self.sell(size=self.position.size)
+                self.buy_price = 0
+
 @app.route('/api/analyze_macd', methods=['POST'])
 def analyze_macd():
     logger.info("收到MACD分析请求，参数：%s", request.json)
     try:
         params = request.json or {}
         # 必选参数校验
-        required = ['stockCode', 'startDate', 'endDate']
+        required = ['stockCode', 'startDate', 'endDate', 'strategyType']
         for key in required:
             if not params.get(key):
                 return jsonify({'code': -1, 'msg': f'缺少参数：{key}'})
-        
+
         # 解析参数
+        strategy_type = params.get('strategyType', 'macd')
         stock_code = params.get('stockCode')
         start_date = params.get('startDate')
         end_date = params.get('endDate')
         macd1 = int(params.get('macd1', 12))
         macd2 = int(params.get('macd2', 26))
         macdsig = int(params.get('macdsig', 9))
+        ma_short = int(params.get('maShort', 5))
+        ma_long = int(params.get('maLong', 20))
+        rsi_period = int(params.get('rsiPeriod', 14))
+        rsi_overbought = int(params.get('rsiOverbought', 70))
+        rsi_oversold = int(params.get('rsiOversold', 30))
+        grid_interval = int(params.get('gridInterval', 2))
+        grid_levels = int(params.get('gridLevels', 10))
 
         # 在analyze_macd接口中替换「获取股票数据」部分
         try:
@@ -221,11 +403,24 @@ def analyze_macd():
         bt_df = bt_df[~bt_df.index.duplicated(keep='last')]
         data = bt.feeds.PandasData(dataname=bt_df)
 
-        # 运行回测（原有逻辑不变）
+        # 运行回测
         cerebro = bt.Cerebro()
         cerebro.broker.setcash(INITIAL_CAPITAL)
         cerebro.broker.setcommission(commission=COMMISSION_RATE)
-        cerebro.addstrategy(MACDStrategy, macd1=macd1, macd2=macd2, macdsig=macdsig)
+
+        # 根据策略类型选择策略类
+        if strategy_type == 'macd':
+            cerebro.addstrategy(MACDStrategy, macd1=macd1, macd2=macd2, macdsig=macdsig)
+        elif strategy_type == 'ma':
+            cerebro.addstrategy(MAStrategy, ma_short=ma_short, ma_long=ma_long)
+        elif strategy_type == 'rsi':
+            cerebro.addstrategy(RSIStrategy, rsi_period=rsi_period,
+                               rsi_oversold=rsi_oversold, rsi_overbought=rsi_overbought)
+        elif strategy_type == 'grid':
+            cerebro.addstrategy(GridStrategy, grid_interval=grid_interval, grid_levels=grid_levels)
+        else:
+            cerebro.addstrategy(MACDStrategy, macd1=macd1, macd2=macd2, macdsig=macdsig)
+
         cerebro.adddata(data)
         strategies = cerebro.run()
         strat = strategies[0]
@@ -237,6 +432,7 @@ def analyze_macd():
             'data': {
                 'klineData': kline_data,
                 'macdData': macd_data,
+                'signals': strat.signals,  # 买卖信号
                 'backtest': {
                     'initialCapital': INITIAL_CAPITAL,
                     'finalCapital': round(cerebro.broker.get_value(), 2),
@@ -259,16 +455,11 @@ def analyze_macd():
 def health_check():
     return jsonify({'code': 0, 'msg': '服务正常运行', 'data': {'port': 5000}})
 
-# 1. 提前缓存数据（单独运行一次）
-def cache_stock_data(stock_code, start_date, end_date):
-    df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-    df.to_csv(f"{stock_code}_data.csv", index=False, encoding='utf-8')
-
 if __name__ == '__main__':
     # 强制指定IP和端口，避免自动分配导致的不匹配
     app.run(
         host='0.0.0.0',
         port=5000,
         debug=True,
-        use_reloader=False  # 关闭自动重载，避免端口占用
+        use_reloader=True  # 关闭自动重载，避免端口占用
     )

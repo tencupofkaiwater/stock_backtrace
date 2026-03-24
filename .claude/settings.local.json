@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(pip list:*)",
+      "Bash(python backtrader/backend/app.py)",
+      "Bash(python -m pytest backtrader/backend/app.py -v -k \"test_\")",
+      "Bash(python -m py_compile backtrader/backend/app.py backtrader/backend/stock_config.py)",
+      "Bash(timeout 10 curl -s \"http://localhost:5000/api/health\")",
+      "Bash(python -c \":*)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(timeout 10 curl -v \"http://localhost:5000/\")"
+    ]
+  }
+}
