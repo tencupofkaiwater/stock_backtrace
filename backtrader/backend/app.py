@@ -95,8 +95,17 @@ class BaseStrategy(bt.Strategy):
         self.buy_price = 0
 
     def log_signal(self, timestamp, signal_type):
+        # 修复：backtrader的datetime不是Python标准datetime对象，需要转换
+        from datetime import datetime
+        # 使用backtrader的datetime访问方式获取日期时间
+        dt = datetime.strptime('%04d-%02d-%02d' % (
+            self.data.datetime.date(0).year,
+            self.data.datetime.date(0).month,
+            self.data.datetime.date(0).day
+        ), '%Y-%m-%d')
+        ts = int(dt.timestamp() * 1000)
         self.signals.append({
-            'timestamp': timestamp,
+            'timestamp': ts,
             'type': signal_type,
             'price': self.data.close[0]
         })
@@ -109,7 +118,7 @@ class BaseStrategy(bt.Strategy):
                 self.trades.append(trade_profit)
                 self.win_trades += 1 if trade_profit > 0 else 0
                 self.lose_trades += 1 if trade_profit <= 0 else 0
-                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+                self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'sell')
                 self.sell(size=self.position.size)
                 self.buy_price = 0
 
@@ -154,13 +163,13 @@ class MACDStrategy(BaseStrategy):
             if size > 0:
                 self.buy(size=size)
                 self.buy_price = self.data.close[0]
-                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+                self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'buy')
         elif self.crossover < 0 and self.position:
             trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
             self.trades.append(trade_profit)
             self.win_trades += 1 if trade_profit > 0 else 0
             self.lose_trades += 1 if trade_profit <= 0 else 0
-            self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+            self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'sell')
             self.sell(size=self.position.size)
             self.buy_price = 0
 
@@ -190,13 +199,13 @@ class MAStrategy(BaseStrategy):
             if size > 0:
                 self.buy(size=size)
                 self.buy_price = self.data.close[0]
-                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+                self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'buy')
         elif self.crossover < 0 and self.position:
             trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
             self.trades.append(trade_profit)
             self.win_trades += 1 if trade_profit > 0 else 0
             self.lose_trades += 1 if trade_profit <= 0 else 0
-            self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+            self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'sell')
             self.sell(size=self.position.size)
             self.buy_price = 0
 
@@ -225,13 +234,13 @@ class RSIStrategy(BaseStrategy):
             if size > 0:
                 self.buy(size=size)
                 self.buy_price = self.data.close[0]
-                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+                self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'buy')
         elif self.rsi[0] >= self.params.rsi_overbought and self.position:
             trade_profit = (self.data.close[0] - self.buy_price) * self.position.size
             self.trades.append(trade_profit)
             self.win_trades += 1 if trade_profit > 0 else 0
             self.lose_trades += 1 if trade_profit <= 0 else 0
-            self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+            self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'sell')
             self.sell(size=self.position.size)
             self.buy_price = 0
 
@@ -270,14 +279,14 @@ class GridStrategy(BaseStrategy):
                 if size > 0:
                     self.buy(size=size)
                     self.buy_price = current_price
-                    self.log_signal(int(self.data.datetime.timestamp() * 1000), 'buy')
+                    self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'buy')
             elif self.position and current_price >= grid_price and i < len(self.grid_prices) - 1:
                 # 卖出信号（价格突破网格线）
                 trade_profit = (current_price - self.buy_price) * self.position.size
                 self.trades.append(trade_profit)
                 self.win_trades += 1 if trade_profit > 0 else 0
                 self.lose_trades += 1 if trade_profit <= 0 else 0
-                self.log_signal(int(self.data.datetime.timestamp() * 1000), 'sell')
+                self.log_signal(int(self.data.datetime.datetime(0).timestamp() * 1000), 'sell')
                 self.sell(size=self.position.size)
                 self.buy_price = 0
 
@@ -310,15 +319,15 @@ def analyze_macd():
 
         # 在analyze_macd接口中替换「获取股票数据」部分
         try:
-            # 转换日期格式（tushare要求YYYY-MM-DD）
-            start_dt = pd.to_datetime(start_date).strftime('%Y-%m-%d')
-            end_dt = pd.to_datetime(end_date).strftime('%Y-%m-%d')
-            
+            # 转换日期格式（tushare要求YYYYMMDD）
+            start_dt = pd.to_datetime(start_date).strftime('%Y%m%d')
+            end_dt = pd.to_datetime(end_date).strftime('%Y%m%d')
+
             # 通过tushare获取日线数据
             df = pro.daily(
                 ts_code=f"{stock_code}.SZ" if stock_code.startswith('00') else f"{stock_code}.SH",
-                start_date=start_date,
-                end_date=end_date
+                start_date=start_dt,
+                end_date=end_dt
                 # adj='qfq'  # 前复权
             )
 

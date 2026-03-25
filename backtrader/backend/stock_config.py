@@ -24,34 +24,6 @@ import json
 import os
 from datetime import datetime
 
-def get_stock_options():
-    # 缓存文件路径
-    cache_file = "stock_list_cache.json"
-    # 缓存有效期1天
-    cache_expire = 86400
-    
-    # 检查缓存是否存在且未过期
-    if os.path.exists(cache_file):
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            cache_data = json.load(f)
-            cache_time = cache_data.get("update_time", 0)
-            # 未过期则返回缓存数据
-            if datetime.now().timestamp() - cache_time < cache_expire:
-                return cache_data["data"]
-    
-    # 缓存失效，重新获取
-    stock_basic = pro.stock_basic(...)  # 原有逻辑
-    stock_options = [...]  # 原有逻辑
-    
-    # 保存到缓存
-    with open(cache_file, 'w', encoding='utf-8') as f:
-        json.dump({
-            "update_time": datetime.now().timestamp(),
-            "data": stock_options
-        }, f, ensure_ascii=False)
-    
-    return stock_options
-    
 def get_stock_list_from_akshare():
     """从akshare拉取全量A股列表（剔除创业板、科创板）"""
     try:
